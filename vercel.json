@@ -1,4 +1,4 @@
-{
+  {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "builds": [
@@ -30,6 +30,10 @@
     },
     {
       "source": "/manifest",
+      "destination": "/src/server.js"
+    },
+    {
+      "source": "/manifest.json",
       "destination": "/src/server.js"
     },
     {
