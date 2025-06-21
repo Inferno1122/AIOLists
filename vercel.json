@@ -21,6 +21,14 @@
       "destination": "/:path*"
     },
     {
+      "source": "/assets/:path*",
+      "destination": "/assets/:path*"
+    },
+    {
+      "source": "/index.html",
+      "destination": "/index.html"
+    },
+    {
       "source": "/manifest",
       "destination": "/src/server.js"
     },
