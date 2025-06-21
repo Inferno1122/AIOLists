@@ -21,19 +21,19 @@
       "destination": "/:path*"
     },
     {
-      "source": "/assets/:path*",
-      "destination": "/assets/:path*"
-    },
-    {
-      "source": "/index.html",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/(manifest)(?:\\?.*)?$",
+      "source": "/manifest",
       "destination": "/src/server.js"
     },
     {
-      "source": "/(catalog|search|meta)/:path*",
+      "source": "/catalog/:path*",
+      "destination": "/src/server.js"
+    },
+    {
+      "source": "/search/:path*",
+      "destination": "/src/server.js"
+    },
+    {
+      "source": "/meta/:path*",
       "destination": "/src/server.js"
     }
   ]
