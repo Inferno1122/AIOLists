@@ -9,6 +9,10 @@
   ],
   "rewrites": [
     {
+      "source": "/favicon.ico",
+      "destination": "/assets/logo.ico"
+    },
+    {
       "source": "/configure",
       "destination": "/index.html"
     },
