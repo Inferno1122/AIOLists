@@ -1,156 +1,117 @@
-/**
- * Cache implementation with TTL support and automatic cleanup
- */
-class Cache {
-  constructor(options = {}) {
-    this.cache = new Map();
-    this.defaultTTL = options.defaultTTL || 3600000; // 1 hour in milliseconds (increased from 1 day)
-    this.cleanupInterval = options.cleanupInterval || 300000; // 5 minutes
-    this._startCleanupInterval();
-  }
+// src/utils/cache.js
+const { Redis } = require('@upstash/redis');
 
-  /**
-   * Start the automatic cleanup interval
-   * @private
-   */
-  _startCleanupInterval() {
-    this._cleanupTimer = setInterval(() => {
-      this._cleanup();
-    }, this.cleanupInterval);
-    
-    // Prevent the interval from keeping the process alive
-    if (this._cleanupTimer.unref) {
-      this._cleanupTimer.unref();
+class Cache {
+  constructor({ defaultTTL = 3_600_000, cleanupInterval = 300_000 } = {}) {
+    this.defaultTTL = defaultTTL;
+
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      this.redis = new Redis({
+        url:   process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.UPSTASH_REDIS_REST_TOKEN,
+      });
+      this.useRedis = true;
+    } else {
+      this.map = new Map();
+      this.cleanupInterval = cleanupInterval;
+      this.useRedis = false;
+      this._startCleanupInterval();
     }
   }
 
-  /**
-   * Clean up expired entries
-   * @private
-   */
+  _startCleanupInterval() {
+    this._cleanupTimer = setInterval(() => this._cleanup(), this.cleanupInterval);
+    if (this._cleanupTimer.unref) this._cleanupTimer.unref();
+  }
+
   _cleanup() {
     const now = Date.now();
-    for (const [key, item] of this.cache.entries()) {
-      if (item.expiry < now) {
-        this.cache.delete(key);
-      }
+    for (const [k, { expiry }] of this.map.entries()) {
+      if (expiry < now) this.map.delete(k);
     }
   }
 
-  /**
-   * Get remaining TTL for a key in milliseconds
-   * @param {string} key - Cache key
-   * @returns {number} Remaining TTL in milliseconds, or -1 if expired/not found
-   */
-  getRemainingTTL(key) {
-    if (!this.cache.has(key)) return -1;
-    
-    const item = this.cache.get(key);
-    const now = Date.now();
-    
-    if (item.expiry < now) {
-      this.cache.delete(key);
-      return -1;
-    }
-    
-    return item.expiry - now;
-  }
-
-  /**
-   * Check if a key exists and is not expired
-   * @param {string} key - Cache key
-   * @returns {boolean} Whether the key exists and is valid
-   */
-  has(key) {
-    if (!this.cache.has(key)) return false;
-    
-    const item = this.cache.get(key);
-    const now = Date.now();
-    
-    // Check if the cached item has expired
-    if (item.expiry < now) {
-      this.cache.delete(key);
-      return false;
-    }
-    
-    return true;
-  }
-
-  /**
-   * Get a value from cache
-   * @param {string} key - Cache key
-   * @returns {*} Cached value or null if not found/expired
-   */
-  get(key) {
-    if (!this.has(key)) return null;
-    return this.cache.get(key).value;
-  }
-
-  /**
-   * Set a value in cache with optional TTL
-   * @param {string} key - Cache key
-   * @param {*} value - Value to cache
-   * @param {number} [ttl] - Time to live in milliseconds
-   * @returns {boolean} Whether the operation was successful
-   */
-  set(key, value, ttl = this.defaultTTL) {
-    const expiry = Date.now() + ttl;
-    this.cache.set(key, { value, expiry });
-    return true;
-  }
-
-  /**
-   * Get multiple values from cache
-   * @param {string[]} keys - Array of cache keys
-   * @returns {Object} Object with found values
-   */
-  getMany(keys) {
-    const result = {};
-    for (const key of keys) {
-      const value = this.get(key);
-      if (value !== null) {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Set multiple values in cache
-   * @param {Object} entries - Object with key-value pairs
-   * @param {number} [ttl] - Time to live in milliseconds
-   */
-  setMany(entries, ttl = this.defaultTTL) {
-    for (const [key, value] of Object.entries(entries)) {
-      this.set(key, value, ttl);
-    }
-  }
-
-  /**
-   * Delete a key from cache
-   * @param {string} key - Cache key
-   * @returns {boolean} Whether the key was deleted
-   */
-  delete(key) {
-    return this.cache.delete(key);
-  }
-
-  /**
-   * Clear all entries from cache
-   */
-  clear() {
-    this.cache.clear();
-  }
-
-  /**
-   * Stop the cleanup interval
-   */
   destroy() {
-    if (this._cleanupTimer) {
-      clearInterval(this._cleanupTimer);
-      this._cleanupTimer = null;
+    if (this._cleanupTimer) clearInterval(this._cleanupTimer);
+    if (this.redis) this.redis.disconnect();
+  }
+
+  async getRemainingTTL(key) {
+    if (this.useRedis) {
+      const secs = await this.redis.ttl(key);
+      return secs > 0 ? secs * 1000 : -1;
     }
+    if (!this.map.has(key)) return -1;
+    const { expiry } = this.map.get(key);
+    const rem = expiry - Date.now();
+    if (rem <= 0) { this.map.delete(key); return -1; }
+    return rem;
+  }
+
+  async has(key) {
+    if (this.useRedis) {
+      return (await this.redis.exists(key)) === 1;
+    }
+    return (await this.getRemainingTTL(key)) > 0;
+  }
+
+  async get(key) {
+    if (this.useRedis) {
+      const s = await this.redis.get(key);
+      return s == null ? null : JSON.parse(s);
+    }
+    if (!(await this.has(key))) return null;
+    return this.map.get(key).value;
+  }
+
+  async set(key, value, ttl = this.defaultTTL) {
+    if (this.useRedis) {
+      return this.redis.set(key, JSON.stringify(value), { ex: Math.floor(ttl/1000) });
+    }
+    const expiry = Date.now() + ttl;
+    this.map.set(key, { value, expiry });
+    return true;
+  }
+
+  async getMany(keys) {
+    if (this.useRedis) {
+      const arr = await this.redis.mget(...keys);
+      const out = {};
+      keys.forEach((k,i) => { if (arr[i]!=null) out[k]=JSON.parse(arr[i]); });
+      return out;
+    }
+    const out = {};
+    for (const k of keys) {
+      const v = await this.get(k);
+      if (v !== null) out[k] = v;
+    }
+    return out;
+  }
+
+  async setMany(entries, ttl = this.defaultTTL) {
+    if (this.useRedis) {
+      const pipe = this.redis.pipeline();
+      for (const [k,v] of Object.entries(entries)) {
+        pipe.set(k, JSON.stringify(v), { ex: Math.floor(ttl/1000) });
+      }
+      await pipe.exec();
+      return true;
+    }
+    for (const [k,v] of Object.entries(entries)) {
+      this.set(k, v, ttl);
+    }
+    return true;
+  }
+
+  async delete(key) {
+    if (this.useRedis) return this.redis.del(key);
+    return this.map.delete(key);
+  }
+
+  async clear() {
+    if (this.useRedis) return this.redis.flushdb();
+    return this.map.clear();
   }
 }
 
-module.exports = Cache; 
+module.exports = Cache;
